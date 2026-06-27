@@ -1,0 +1,30 @@
+{
+  "client_name": "Demo Client",
+  "market": "China Export",
+  "total_budget_rmb": 300000,
+  "selected_platforms": [
+    "Google Keyword Search",
+    "Google PMax",
+    "Google Remarketing",
+    "Facebook & IG Website Traffic",
+    "Facebook & IG Lead Ads",
+    "TikTok"
+  ],
+  "platform_budget_percentages": {
+    "Google Keyword Search": 0.25,
+    "Yandex": 0,
+    "Google PMax": 0.2,
+    "Google Remarketing": 0.1,
+    "Facebook & IG Website Traffic": 0.15,
+    "Facebook & IG Lead Ads": 0.2,
+    "TikTok": 0.1,
+    "LinkedIn Lead Ads": 0
+  },
+  "benchmarks": {
+    "Google Keyword Search": {
+      "cpc": 8,
+      "ctr": "2%",
+      "cpr": 120
+    }
+  }
+}

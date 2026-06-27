@@ -1,330 +1,250 @@
-#!/usr/bin/env python3
-"""Generate a formatted Google Sheet media plan from a structured strategy JSON."""
+"""Build media plan rows and Google Sheets formulas from a client brief."""
 
 from __future__ import annotations
 
-import argparse
-import csv
 import json
-import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-try:
-    from google.oauth2.service_account import Credentials
-    from googleapiclient.discovery import build
-except ImportError:
-    Credentials = None
-    build = None
-
-
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 HEADERS = [
-    "Market",
     "Channel",
-    "Campaign Name",
-    "Funnel Stage",
-    "Audience",
-    "Budget",
-    "KPI Target",
-    "Creative Angle",
-    "Expected CPL Range",
-    "Notes",
+    "Ad Platform",
+    "Budget Allocation (RMB)",
+    "Budget %",
+    "Estimated Clicks",
+    "Estimated Impressions",
+    "Estimated CTR",
+    "Estimated Avg. CPC (RMB)",
+    "Estimated Avg. CPR (RMB)",
+    "Estimated Registrations",
 ]
 
-FUNNEL_ORDER = ["TOF", "MOF", "BOF"]
+
+CHANNEL_GROUPS = [
+    {
+        "channel": "Search Advertising",
+        "platforms": ["Google Keyword Search", "Yandex", "Google PMax"],
+    },
+    {
+        "channel": "Display Ad Network",
+        "platforms": ["Google Remarketing"],
+    },
+    {
+        "channel": "Social Media Advertising",
+        "platforms": [
+            "Facebook & IG Website Traffic",
+            "Facebook & IG Lead Ads",
+            "TikTok",
+            "LinkedIn Lead Ads",
+        ],
+    },
+]
 
 
-class StrategyValidationError(ValueError):
-    """Raised when a strategy JSON object is missing required structure."""
+DEFAULT_BENCHMARKS = {
+    "Google Keyword Search": {"cpc": 8, "ctr": 0.02, "cpr": 120},
+    "Yandex": {"cpc": 6, "ctr": 0.02, "cpr": 120},
+    "Google PMax": {"cpc": 3, "ctr": 0.03, "cpr": 110},
+    "Google Remarketing": {"cpc": 2, "ctr": 0.012, "cpr": 120},
+    "Facebook & IG Website Traffic": {"cpc": 4, "ctr": 0.006, "cpr": 200},
+    "Facebook & IG Lead Ads": {"cpc": 4, "ctr": 0.006, "cpr": 100},
+    "TikTok": {"cpc": 3, "ctr": 0.006, "cpr": 150},
+    "LinkedIn Lead Ads": {"cpc": 28, "ctr": 0.006, "cpr": 800},
+}
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Convert a structured strategy JSON into a Google Sheet media plan."
-    )
-    parser.add_argument("strategy_json", type=Path, help="Path to the strategy JSON file.")
-    parser.add_argument(
-        "--credentials",
-        type=Path,
-        default=Path("service_account.json"),
-        help="Path to a Google service account JSON key.",
-    )
-    parser.add_argument(
-        "--spreadsheet-title",
-        default="Media Plan",
-        help="Google Sheet title to create.",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Write a local CSV preview instead of creating a Google Sheet.",
-    )
-    parser.add_argument(
-        "--output-csv",
-        type=Path,
-        default=Path("media_plan_preview.csv"),
-        help="CSV output path used with --dry-run.",
-    )
-    return parser.parse_args()
+ALL_PLATFORMS = [
+    platform
+    for group in CHANNEL_GROUPS
+    for platform in group["platforms"]
+]
 
 
-def load_strategy(path: Path) -> dict[str, Any]:
+@dataclass(frozen=True)
+class MediaPlan:
+    title: str
+    values: list[list[Any]]
+    group_merge_ranges: list[tuple[int, int]]
+    selected_row_indexes: list[int]
+    total_row_index: int
+
+
+def load_client_brief(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8-sig") as file:
-        strategy = json.load(file)
+        brief = json.load(file)
+    validate_client_brief(brief)
+    return brief
 
-    validate_strategy(strategy)
-    return strategy
 
+def validate_client_brief(brief: dict[str, Any]) -> None:
+    if "total_budget_rmb" not in brief:
+        raise ValueError("Missing required field: total_budget_rmb")
 
-def validate_strategy(strategy: dict[str, Any]) -> None:
-    required = [
-        "market_insight",
-        "funnel",
-        "budget_split",
-        "channel_strategy",
-        "kpi_forecast",
-        "creative_strategy",
+    total_budget = parse_number(brief["total_budget_rmb"])
+    if total_budget <= 0:
+        raise ValueError("total_budget_rmb must be greater than 0")
+
+    selected_platforms = brief.get("selected_platforms", ALL_PLATFORMS)
+    unknown = [platform for platform in selected_platforms if platform not in ALL_PLATFORMS]
+    if unknown:
+        raise ValueError("Unknown selected platform(s): " + ", ".join(unknown))
+
+    platform_budgets = brief.get("platform_budgets_rmb", {})
+    unknown_budget_platforms = [
+        platform for platform in platform_budgets if platform not in ALL_PLATFORMS
     ]
-    missing = [key for key in required if key not in strategy]
-    if missing:
-        raise StrategyValidationError("Missing required key(s): " + ", ".join(missing))
-
-    for stage in FUNNEL_ORDER:
-        if stage not in strategy["funnel"]:
-            raise StrategyValidationError("Missing funnel stage: " + stage)
-        if stage not in strategy["budget_split"]:
-            raise StrategyValidationError("Missing budget split stage: " + stage)
-
-    if "cpl_range" not in strategy["kpi_forecast"]:
-        raise StrategyValidationError("Missing kpi_forecast.cpl_range")
-
-    if "angles" not in strategy["creative_strategy"]:
-        raise StrategyValidationError("Missing creative_strategy.angles")
-
-
-def generate_media_plan(strategy: dict[str, Any]) -> list[list[Any]]:
-    rows: list[list[Any]] = []
-    market_insight = strategy["market_insight"]
-    funnel = strategy["funnel"]
-    budget_split = strategy["budget_split"]
-    kpi_forecast = strategy["kpi_forecast"]
-    creative_strategy = strategy["creative_strategy"]
-
-    for market, insight in market_insight.items():
-        for stage in FUNNEL_ORDER:
-            for channel in funnel[stage]:
-                channel_root = channel_family(channel)
-                channel_rules = strategy["channel_strategy"].get(channel_root, {})
-                rows.append(
-                    [
-                        market,
-                        channel,
-                        campaign_name(market, channel, stage),
-                        stage,
-                        strategy.get("audience", ""),
-                        budget_value(budget_split[stage]),
-                        kpi_target(kpi_forecast, channel_root),
-                        creative_angle(creative_strategy),
-                        kpi_forecast["cpl_range"],
-                        notes(insight, channel_rules),
-                    ]
-                )
-
-    return rows
-
-
-def channel_family(channel: str) -> str:
-    normalized = channel.lower()
-    if "google" in normalized:
-        return "Google"
-    if "meta" in normalized:
-        return "Meta"
-    if "tiktok" in normalized:
-        return "TikTok"
-    return channel.split()[0]
-
-
-def campaign_name(market: str, channel: str, stage: str) -> str:
-    return "_".join([slug(market), slug(channel), slug(stage), "Media-Plan"])
-
-
-def slug(value: Any) -> str:
-    text = str(value).strip()
-    text = re.sub(r"[^A-Za-z0-9]+", "-", text)
-    return text.strip("-")
-
-
-def budget_value(split: Any) -> str:
-    if isinstance(split, (int, float)):
-        return str(round(split * 100, 2)).rstrip("0").rstrip(".") + "%"
-    return str(split)
-
-
-def kpi_target(kpi_forecast: dict[str, Any], channel_root: str) -> str:
-    parts = []
-    if "ctr_range" in kpi_forecast:
-        parts.append("CTR " + str(kpi_forecast["ctr_range"]))
-    cpc_range = kpi_forecast.get("cpc_range", {})
-    if isinstance(cpc_range, dict):
-        cpc = cpc_range.get(channel_root.lower())
-        if cpc:
-            parts.append("CPC " + str(cpc))
-    if "cvr_range" in kpi_forecast:
-        parts.append("CVR " + str(kpi_forecast["cvr_range"]))
-    return "; ".join(parts)
-
-
-def creative_angle(creative_strategy: dict[str, Any]) -> str:
-    angles = creative_strategy.get("angles", [])
-    formats = creative_strategy.get("formats", [])
-    angle_text = ", ".join(str(angle) for angle in angles)
-    format_text = ", ".join(str(fmt) for fmt in formats)
-
-    if angle_text and format_text:
-        return angle_text + " | Formats: " + format_text
-    if angle_text:
-        return angle_text
-    return format_text
-
-
-def notes(market_insight: str, channel_rules: dict[str, Any]) -> str:
-    parts = []
-    if market_insight:
-        parts.append("Market insight: " + str(market_insight))
-    if "role" in channel_rules:
-        parts.append("Channel role: " + str(channel_rules["role"]))
-    if "priority" in channel_rules:
-        parts.append("Priority: " + str(channel_rules["priority"]))
-    return "; ".join(parts)
-
-
-def create_google_sheet(title: str, rows: list[list[Any]], credentials_path: Path) -> str:
-    if Credentials is None or build is None:
-        raise RuntimeError(
-            "Google API dependencies are not installed. Run: pip install -r requirements.txt"
+    if unknown_budget_platforms:
+        raise ValueError(
+            "Unknown platform budget key(s): " + ", ".join(unknown_budget_platforms)
         )
 
-    if not credentials_path.exists():
-        raise FileNotFoundError(
-            "Google credentials file not found: " + str(credentials_path)
-            + ". Use --dry-run for a local CSV preview."
+    platform_percentages = brief.get("platform_budget_percentages", {})
+    unknown_percentage_platforms = [
+        platform for platform in platform_percentages if platform not in ALL_PLATFORMS
+    ]
+    if unknown_percentage_platforms:
+        raise ValueError(
+            "Unknown platform percentage key(s): "
+            + ", ".join(unknown_percentage_platforms)
         )
 
-    credentials = Credentials.from_service_account_file(credentials_path, scopes=SCOPES)
-    service = build("sheets", "v4", credentials=credentials)
 
-    spreadsheet = (
-        service.spreadsheets()
-        .create(
-            body={
-                "properties": {"title": title},
-                "sheets": [{"properties": {"title": "Media Plan"}}],
-            },
-            fields="spreadsheetId,spreadsheetUrl",
-        )
-        .execute()
+def build_media_plan(brief: dict[str, Any]) -> MediaPlan:
+    title = sheet_title(brief)
+    total_budget = parse_number(brief["total_budget_rmb"])
+    total_row_index = len(ALL_PLATFORMS) + 2
+    selected_platforms = set(brief.get("selected_platforms", ALL_PLATFORMS))
+    benchmarks = merge_benchmarks(brief.get("benchmarks", {}))
+    budgets = allocate_budgets(brief, total_budget, selected_platforms)
+
+    rows: list[list[Any]] = [HEADERS]
+    group_merge_ranges: list[tuple[int, int]] = []
+    selected_row_indexes: list[int] = []
+
+    for group in CHANNEL_GROUPS:
+        group_start_row = len(rows) + 1
+        for platform in group["platforms"]:
+            sheet_row = len(rows) + 1
+            budget = budgets.get(platform, 0)
+            benchmark = benchmarks[platform]
+            rows.append(
+                [
+                    group["channel"],
+                    platform,
+                    budget,
+                    f"=C{sheet_row}/$C${total_row_index}",
+                    f"=C{sheet_row}/H{sheet_row}",
+                    f"=E{sheet_row}/G{sheet_row}",
+                    benchmark["ctr"],
+                    benchmark["cpc"],
+                    benchmark["cpr"],
+                    f"=C{sheet_row}/I{sheet_row}",
+                ]
+            )
+            if platform in selected_platforms:
+                selected_row_indexes.append(sheet_row)
+
+        group_end_row = len(rows)
+        if group_end_row > group_start_row:
+            group_merge_ranges.append((group_start_row, group_end_row))
+
+    rows.append(
+        [
+            "Total",
+            "",
+            f"=SUM(C2:C{total_row_index - 1})",
+            "100%",
+            f"=SUM(E2:E{total_row_index - 1})",
+            f"=SUM(F2:F{total_row_index - 1})",
+            f"=E{total_row_index}/F{total_row_index}",
+            f"=C{total_row_index}/E{total_row_index}",
+            f"=C{total_row_index}/J{total_row_index}",
+            f"=SUM(J2:J{total_row_index - 1})",
+        ]
     )
 
-    spreadsheet_id = spreadsheet["spreadsheetId"]
-    values = [HEADERS] + rows
-
-    service.spreadsheets().values().update(
-        spreadsheetId=spreadsheet_id,
-        range="Media Plan!A1",
-        valueInputOption="USER_ENTERED",
-        body={"values": values},
-    ).execute()
-
-    apply_formatting(service, spreadsheet_id, len(values))
-    return spreadsheet["spreadsheetUrl"]
+    return MediaPlan(
+        title=title,
+        values=rows,
+        group_merge_ranges=group_merge_ranges,
+        selected_row_indexes=selected_row_indexes,
+        total_row_index=total_row_index,
+    )
 
 
-def apply_formatting(service: Any, spreadsheet_id: str, row_count: int) -> None:
-    sheet_id = 0
-    requests = [
-        {
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": 0,
-                    "endRowIndex": 1,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": len(HEADERS),
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "backgroundColor": {"red": 0.12, "green": 0.21, "blue": 0.32},
-                        "horizontalAlignment": "CENTER",
-                        "textFormat": {
-                            "foregroundColor": {"red": 1, "green": 1, "blue": 1},
-                            "bold": True,
-                        },
-                    }
-                },
-                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
-            }
-        },
-        {
-            "updateSheetProperties": {
-                "properties": {
-                    "sheetId": sheet_id,
-                    "gridProperties": {"frozenRowCount": 1},
-                },
-                "fields": "gridProperties.frozenRowCount",
-            }
-        },
-        {
-            "autoResizeDimensions": {
-                "dimensions": {
-                    "sheetId": sheet_id,
-                    "dimension": "COLUMNS",
-                    "startIndex": 0,
-                    "endIndex": len(HEADERS),
-                }
-            }
-        },
-        {
-            "setBasicFilter": {
-                "filter": {
-                    "range": {
-                        "sheetId": sheet_id,
-                        "startRowIndex": 0,
-                        "endRowIndex": row_count,
-                        "startColumnIndex": 0,
-                        "endColumnIndex": len(HEADERS),
-                    }
-                }
-            }
-        },
-    ]
-
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=spreadsheet_id, body={"requests": requests}
-    ).execute()
+def sheet_title(brief: dict[str, Any]) -> str:
+    client_name = str(brief.get("client_name", "Client")).strip() or "Client"
+    market = str(brief.get("market", "")).strip()
+    if market:
+        return f"{client_name} {market} Media Plan"
+    return f"{client_name} Media Plan"
 
 
-def write_csv(path: Path, rows: list[list[Any]]) -> None:
-    with path.open("w", encoding="utf-8", newline="") as file:
-        writer = csv.writer(file)
-        writer.writerow(HEADERS)
-        writer.writerows(rows)
+def merge_benchmarks(custom_benchmarks: dict[str, Any]) -> dict[str, dict[str, float]]:
+    benchmarks = {
+        platform: values.copy()
+        for platform, values in DEFAULT_BENCHMARKS.items()
+    }
+
+    for platform, values in custom_benchmarks.items():
+        if platform not in benchmarks:
+            raise ValueError("Unknown benchmark platform: " + platform)
+        for metric in ("cpc", "ctr", "cpr"):
+            if metric in values:
+                benchmarks[platform][metric] = parse_metric(values[metric], metric)
+
+    return benchmarks
 
 
-def main() -> None:
-    args = parse_args()
-    strategy = load_strategy(args.strategy_json)
-    rows = generate_media_plan(strategy)
+def allocate_budgets(
+    brief: dict[str, Any], total_budget: float, selected_platforms: set[str]
+) -> dict[str, float]:
+    budgets = {platform: 0.0 for platform in ALL_PLATFORMS}
+    explicit_budgets = brief.get("platform_budgets_rmb", {})
+    explicit_percentages = brief.get("platform_budget_percentages", {})
 
-    if args.dry_run:
-        write_csv(args.output_csv, rows)
-        print("CSV preview created: " + str(args.output_csv))
-        return
+    if explicit_budgets:
+        for platform, amount in explicit_budgets.items():
+            budgets[platform] = parse_number(amount)
+        return budgets
 
-    spreadsheet_url = create_google_sheet(args.spreadsheet_title, rows, args.credentials)
-    print("Google Sheet created: " + spreadsheet_url)
+    if explicit_percentages:
+        for platform, percentage in explicit_percentages.items():
+            budgets[platform] = total_budget * parse_percentage(percentage)
+        return budgets
+
+    if not selected_platforms:
+        return budgets
+
+    even_budget = total_budget / len(selected_platforms)
+    for platform in selected_platforms:
+        budgets[platform] = even_budget
+    return budgets
 
 
-if __name__ == "__main__":
-    main()
+def parse_metric(value: Any, metric: str) -> float:
+    if metric == "ctr":
+        return parse_percentage(value)
+    return parse_number(value)
+
+
+def parse_number(value: Any) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    cleaned = str(value).replace(",", "").replace("RMB", "").replace("¥", "").strip()
+    if not cleaned:
+        raise ValueError("Expected numeric value, got blank")
+    return float(cleaned)
+
+
+def parse_percentage(value: Any) -> float:
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        return numeric / 100 if numeric > 1 else numeric
+    text = str(value).strip()
+    if text.endswith("%"):
+        return float(text[:-1].strip()) / 100
+    numeric = float(text)
+    return numeric / 100 if numeric > 1 else numeric

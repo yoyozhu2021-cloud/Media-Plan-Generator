@@ -1,35 +1,99 @@
-﻿# Media Plan Generator
+# Media Plan Google Sheet Generator
 
-这是一个可直接分享的网页工具：用户打开网址，粘贴 Strategy JSON，点击生成，就能看到 Media Plan 表格并下载 CSV。
+Python automation for creating a formatted Google Sheet media plan from a client brief JSON.
 
-## 分享版部署
+## Run
 
-本项目已支持 GitHub Pages。部署后，别人只需要打开 GitHub Pages 网址即可使用，不需要安装 Python，也不需要本地服务器。
+```powershell
+pip install -r requirements.txt
+python main.py sample_client_input.json
+```
 
-## 本地预览
+By default, the script looks for a Google service account key at:
 
-直接双击 `index.html`，或用浏览器打开它即可。
+```text
+service_account.json
+```
 
-## 输出字段
+You can also pass another key path:
 
-- Market
-- Channel
-- Campaign Name
-- Funnel Stage
-- Audience
-- Budget
-- KPI Target
-- Creative Angle
-- Expected CPL Range
-- Notes
+```powershell
+python main.py sample_client_input.json --credentials path\to\service_account.json
+```
 
-## 转换规则
+## Google Setup
 
-工具只按结构化 JSON 转换，不自由发挥：
+1. Create a Google Cloud project.
+2. Enable the Google Sheets API.
+3. Create a service account.
+4. Download the service account JSON key.
+5. Save it as `service_account.json` in this project folder.
 
-- `market_insight` 生成 Market 和 Notes
-- `funnel` 分配 Funnel Stage 和 Channel
-- `budget_split` 生成 Budget
-- `kpi_forecast` 生成 KPI Target 和 Expected CPL Range
-- `creative_strategy` 生成 Creative Angle
-- `channel_strategy` 生成 Notes
+## Client Brief Format
+
+Required:
+
+- `client_name`
+- `market`
+- `total_budget_rmb`
+
+Optional:
+
+- `selected_platforms`: platforms to highlight yellow.
+- `platform_budgets_rmb`: exact RMB budget per platform.
+- `platform_budget_percentages`: budget percentage per platform.
+- `benchmarks`: override CPC, CTR, or CPR defaults.
+
+If no platform budgets or percentages are provided, the total budget is split evenly across selected platforms.
+
+## Output Columns
+
+1. Channel
+2. Ad Platform
+3. Budget Allocation (RMB)
+4. Budget %
+5. Estimated Clicks
+6. Estimated Impressions
+7. Estimated CTR
+8. Estimated Avg. CPC (RMB)
+9. Estimated Avg. CPR (RMB)
+10. Estimated Registrations
+
+## Included Channel Groups
+
+- Search Advertising
+  - Google Keyword Search
+  - Yandex
+  - Google PMax
+- Display Ad Network
+  - Google Remarketing
+- Social Media Advertising
+  - Facebook & IG Website Traffic
+  - Facebook & IG Lead Ads
+  - TikTok
+  - LinkedIn Lead Ads
+
+## Default Benchmarks
+
+| Platform | CPC | CTR | CPR |
+| --- | ---: | ---: | ---: |
+| Google Keyword Search | 8 | 2% | 120 |
+| Yandex | 6 | 2% | 120 |
+| Google PMax | 3 | 3% | 110 |
+| Google Remarketing | 2 | 1.2% | 120 |
+| Facebook & IG Website Traffic | 4 | 0.6% | 200 |
+| Facebook & IG Lead Ads | 4 | 0.6% | 100 |
+| TikTok | 3 | 0.6% | 150 |
+| LinkedIn Lead Ads | 28 | 0.6% | 800 |
+
+## Sheet Formatting
+
+The generated Google Sheet includes:
+
+- Green header row
+- Yellow highlight for selected ad platforms
+- RMB currency formatting
+- Percentage formatting
+- Thousands separator
+- Merged cells for channel groups
+- Final Total row with formulas
