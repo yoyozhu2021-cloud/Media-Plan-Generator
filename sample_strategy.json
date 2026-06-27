@@ -1,0 +1,61 @@
+{
+  "market_insight": {
+    "SEA": "high intent, low CPC, strong Google search behavior",
+    "LATAM": "Meta-heavy, price-sensitive buyers",
+    "EU_US": "high CPC, high quality buyers"
+  },
+  "funnel": {
+    "TOF": [
+      "TikTok",
+      "Meta Video"
+    ],
+    "MOF": [
+      "Meta Traffic",
+      "Google PMax"
+    ],
+    "BOF": [
+      "Google Search",
+      "Meta Lead Ads"
+    ]
+  },
+  "budget_split": {
+    "TOF": 0.3,
+    "MOF": 0.25,
+    "BOF": 0.45
+  },
+  "channel_strategy": {
+    "Google": {
+      "role": "high intent conversion",
+      "priority": "BOF"
+    },
+    "Meta": {
+      "role": "lead generation",
+      "priority": "MOF/BOF"
+    },
+    "TikTok": {
+      "role": "awareness",
+      "priority": "TOF"
+    }
+  },
+  "kpi_forecast": {
+    "ctr_range": "1.5%-4%",
+    "cpc_range": {
+      "google": "8-25 RMB",
+      "meta": "3-10 RMB"
+    },
+    "cvr_range": "2%-6%",
+    "cpl_range": "50-120 RMB"
+  },
+  "creative_strategy": {
+    "angles": [
+      "industry sourcing",
+      "scale & credibility",
+      "supply chain advantage"
+    ],
+    "formats": [
+      "video",
+      "static",
+      "testimonial"
+    ]
+  }
+}

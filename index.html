@@ -1,0 +1,257 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Media Plan Generator</title>
+  <style>
+    :root {
+      font-family: Inter, "Segoe UI", Arial, sans-serif;
+      color: #17202a;
+      background: #f4f7f9;
+      --accent: #176b87;
+      --accent-dark: #0f4f63;
+      --line: #d7dde3;
+      --muted: #617181;
+      --panel: #ffffff;
+      --danger-bg: #fff4f0;
+      --danger: #9a3412;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    header { padding: 24px 32px 16px; background: #fff; border-bottom: 1px solid var(--line); }
+    h1 { margin: 0 0 8px; font-size: 24px; }
+    p { margin: 0; color: var(--muted); }
+    main { padding: 24px 32px 44px; display: grid; gap: 18px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+    label { display: block; margin-bottom: 8px; font-weight: 700; font-size: 14px; }
+    textarea { width: 100%; min-height: 300px; resize: vertical; border: 1px solid var(--line); border-radius: 8px; padding: 14px; font: 13px/1.45 Consolas, Menlo, monospace; color: #17202a; background: #fbfcfd; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+    button, .button { border: 0; border-radius: 7px; padding: 10px 14px; background: var(--accent); color: #fff; font-weight: 700; cursor: pointer; text-decoration: none; font-size: 14px; }
+    button:hover, .button:hover { background: var(--accent-dark); }
+    .secondary { background: #e9eef2; color: #1c2b38; }
+    .secondary:hover { background: #dce4ea; }
+    .error { display: none; background: var(--danger-bg); color: var(--danger); border: 1px solid #ffd6c8; border-radius: 8px; padding: 12px 14px; }
+    .meta { color: var(--muted); font-size: 13px; }
+    .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+    table { width: 100%; min-width: 1180px; border-collapse: collapse; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; font-size: 13px; }
+    th { position: sticky; top: 0; background: #173247; color: #fff; font-size: 12px; }
+    tr:nth-child(even) td { background: #fbfcfd; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Media Plan Generator</h1>
+    <p>粘贴 Strategy JSON，自动生成结构化 Media Plan，可直接下载 CSV。</p>
+  </header>
+  <main>
+    <section class="panel">
+      <label for="strategyJson">Strategy JSON</label>
+      <textarea id="strategyJson" spellcheck="false"></textarea>
+      <div class="actions">
+        <button id="generateButton" type="button">生成 Media Plan</button>
+        <button id="downloadButton" type="button">下载 CSV</button>
+        <button id="sampleButton" class="secondary" type="button">恢复示例</button>
+        <span id="rowCount" class="meta"></span>
+      </div>
+    </section>
+    <div id="error" class="error"></div>
+    <section class="table-wrap">
+      <table id="planTable"></table>
+    </section>
+  </main>
+
+  <script>
+    const HEADERS = [
+      "Market",
+      "Channel",
+      "Campaign Name",
+      "Funnel Stage",
+      "Audience",
+      "Budget",
+      "KPI Target",
+      "Creative Angle",
+      "Expected CPL Range",
+      "Notes"
+    ];
+    const FUNNEL_ORDER = ["TOF", "MOF", "BOF"];
+    const DEFAULT_STRATEGY = {
+      market_insight: {
+        SEA: "high intent, low CPC, strong Google search behavior",
+        LATAM: "Meta-heavy, price-sensitive buyers",
+        EU_US: "high CPC, high quality buyers"
+      },
+      funnel: {
+        TOF: ["TikTok", "Meta Video"],
+        MOF: ["Meta Traffic", "Google PMax"],
+        BOF: ["Google Search", "Meta Lead Ads"]
+      },
+      budget_split: { TOF: 0.3, MOF: 0.25, BOF: 0.45 },
+      channel_strategy: {
+        Google: { role: "high intent conversion", priority: "BOF" },
+        Meta: { role: "lead generation", priority: "MOF/BOF" },
+        TikTok: { role: "awareness", priority: "TOF" }
+      },
+      kpi_forecast: {
+        ctr_range: "1.5%-4%",
+        cpc_range: { google: "8-25 RMB", meta: "3-10 RMB" },
+        cvr_range: "2%-6%",
+        cpl_range: "50-120 RMB"
+      },
+      creative_strategy: {
+        angles: ["industry sourcing", "scale & credibility", "supply chain advantage"],
+        formats: ["video", "static", "testimonial"]
+      }
+    };
+
+    const strategyInput = document.getElementById("strategyJson");
+    const errorBox = document.getElementById("error");
+    const table = document.getElementById("planTable");
+    const rowCount = document.getElementById("rowCount");
+    let currentRows = [];
+
+    function channelFamily(channel) {
+      const normalized = String(channel).toLowerCase();
+      if (normalized.includes("google")) return "Google";
+      if (normalized.includes("meta")) return "Meta";
+      if (normalized.includes("tiktok")) return "TikTok";
+      return String(channel).split(/\s+/)[0];
+    }
+
+    function slug(value) {
+      return String(value).trim().replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    }
+
+    function budgetValue(split) {
+      if (typeof split === "number") return `${Number((split * 100).toFixed(2))}%`;
+      return String(split);
+    }
+
+    function kpiTarget(kpiForecast, family) {
+      const parts = [];
+      if (kpiForecast.ctr_range) parts.push(`CTR ${kpiForecast.ctr_range}`);
+      const cpcRange = kpiForecast.cpc_range || {};
+      const cpc = cpcRange[String(family).toLowerCase()];
+      if (cpc) parts.push(`CPC ${cpc}`);
+      if (kpiForecast.cvr_range) parts.push(`CVR ${kpiForecast.cvr_range}`);
+      return parts.join("; ");
+    }
+
+    function creativeAngle(creativeStrategy) {
+      const angles = creativeStrategy.angles || [];
+      const formats = creativeStrategy.formats || [];
+      const angleText = angles.join(", ");
+      const formatText = formats.join(", ");
+      if (angleText && formatText) return `${angleText} | Formats: ${formatText}`;
+      return angleText || formatText;
+    }
+
+    function notes(marketInsight, channelRules) {
+      const parts = [];
+      if (marketInsight) parts.push(`Market insight: ${marketInsight}`);
+      if (channelRules.role) parts.push(`Channel role: ${channelRules.role}`);
+      if (channelRules.priority) parts.push(`Priority: ${channelRules.priority}`);
+      return parts.join("; ");
+    }
+
+    function validateStrategy(strategy) {
+      const required = ["market_insight", "funnel", "budget_split", "channel_strategy", "kpi_forecast", "creative_strategy"];
+      const missing = required.filter((key) => !(key in strategy));
+      if (missing.length) throw new Error(`Missing required key(s): ${missing.join(", ")}`);
+      for (const stage of FUNNEL_ORDER) {
+        if (!(stage in strategy.funnel)) throw new Error(`Missing funnel stage: ${stage}`);
+        if (!(stage in strategy.budget_split)) throw new Error(`Missing budget split stage: ${stage}`);
+      }
+      if (!("cpl_range" in strategy.kpi_forecast)) throw new Error("Missing kpi_forecast.cpl_range");
+      if (!("angles" in strategy.creative_strategy)) throw new Error("Missing creative_strategy.angles");
+    }
+
+    function generateRows(strategy) {
+      validateStrategy(strategy);
+      const rows = [];
+      for (const [market, insight] of Object.entries(strategy.market_insight)) {
+        for (const stage of FUNNEL_ORDER) {
+          for (const channel of strategy.funnel[stage]) {
+            const family = channelFamily(channel);
+            const channelRules = strategy.channel_strategy[family] || {};
+            rows.push([
+              market,
+              channel,
+              `${slug(market)}_${slug(channel)}_${slug(stage)}_Media-Plan`,
+              stage,
+              strategy.audience || "",
+              budgetValue(strategy.budget_split[stage]),
+              kpiTarget(strategy.kpi_forecast, family),
+              creativeAngle(strategy.creative_strategy),
+              strategy.kpi_forecast.cpl_range,
+              notes(insight, channelRules)
+            ]);
+          }
+        }
+      }
+      return rows;
+    }
+
+    function renderTable(rows) {
+      const headerHtml = `<thead><tr>${HEADERS.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead>`;
+      const bodyHtml = `<tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("")}</tbody>`;
+      table.innerHTML = headerHtml + bodyHtml;
+      rowCount.textContent = `已生成 ${rows.length} 行`;
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[char]));
+    }
+
+    function showError(message) {
+      errorBox.textContent = message;
+      errorBox.style.display = "block";
+    }
+
+    function clearError() {
+      errorBox.textContent = "";
+      errorBox.style.display = "none";
+    }
+
+    function generate() {
+      clearError();
+      try {
+        const strategy = JSON.parse(strategyInput.value);
+        currentRows = generateRows(strategy);
+        renderTable(currentRows);
+      } catch (error) {
+        showError(`无法生成：${error.message}`);
+      }
+    }
+
+    function downloadCsv() {
+      if (!currentRows.length) generate();
+      if (!currentRows.length) return;
+      const lines = [HEADERS, ...currentRows].map((row) => row.map(csvCell).join(","));
+      const blob = new Blob(["\ufeff" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "media_plan.csv";
+      link.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function csvCell(value) {
+      const text = String(value).replace(/"/g, '""');
+      return `"${text}"`;
+    }
+
+    function loadSample() {
+      strategyInput.value = JSON.stringify(DEFAULT_STRATEGY, null, 2);
+      generate();
+    }
+
+    document.getElementById("generateButton").addEventListener("click", generate);
+    document.getElementById("downloadButton").addEventListener("click", downloadCsv);
+    document.getElementById("sampleButton").addEventListener("click", loadSample);
+    loadSample();
+  </script>
+</body>
+</html>

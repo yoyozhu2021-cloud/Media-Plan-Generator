@@ -1,0 +1,18 @@
+{
+  "client_name": "Acme Growth",
+  "industry": "B2B SaaS",
+  "market": "US",
+  "objective": "Lead Generation",
+  "kpi": "MQLs",
+  "budget": 50000,
+  "channels": [
+    "Google Search",
+    "Meta Lead Ads",
+    "TikTok",
+    "PMax"
+  ],
+  "target_audience": "Marketing leaders at mid-market software companies",
+  "product_type": "Marketing attribution platform",
+  "landing_page": "https://example.com/demo",
+  "tracking": "GA4, Google Ads conversion tag, Meta Pixel, offline conversion import"
+}
