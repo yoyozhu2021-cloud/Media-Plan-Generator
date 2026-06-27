@@ -1,5 +1,5 @@
-﻿<!doctype html>
-<html lang="zh-CN">
+<!doctype html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -36,23 +36,25 @@
     .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
     table { width: 100%; min-width: 1180px; border-collapse: collapse; }
     th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; font-size: 13px; }
-    th { position: sticky; top: 0; background: #173247; color: #fff; font-size: 12px; }
+    th { position: sticky; top: 0; background: #5f9f47; color: #fff; font-size: 12px; }
     tr:nth-child(even) td { background: #fbfcfd; }
+    td.selected { background: #ffe866 !important; font-weight: 700; }
+    tr.total td { background: #e8e8e8 !important; font-weight: 700; }
   </style>
 </head>
 <body>
   <header>
     <h1>Media Plan Generator</h1>
-    <p>粘贴 Strategy JSON，自动生成结构化 Media Plan，可直接下载 CSV。</p>
+    <p>Paste a client brief JSON to generate an English media plan table and download CSV.</p>
   </header>
   <main>
     <section class="panel">
-      <label for="strategyJson">Strategy JSON</label>
-      <textarea id="strategyJson" spellcheck="false"></textarea>
+      <label for="clientBrief">Client Brief JSON</label>
+      <textarea id="clientBrief" spellcheck="false"></textarea>
       <div class="actions">
-        <button id="generateButton" type="button">生成 Media Plan</button>
-        <button id="downloadButton" type="button">下载 CSV</button>
-        <button id="sampleButton" class="secondary" type="button">恢复示例</button>
+        <button id="generateButton" type="button">Generate Media Plan</button>
+        <button id="downloadButton" type="button">Download CSV</button>
+        <button id="sampleButton" class="secondary" type="button">Reload Sample</button>
         <span id="rowCount" class="meta"></span>
       </div>
     </section>
@@ -64,144 +66,249 @@
 
   <script>
     const HEADERS = [
-      "Market",
       "Channel",
-      "Campaign Name",
-      "Funnel Stage",
-      "Audience",
-      "Budget",
-      "KPI Target",
-      "Creative Angle",
-      "Expected CPL Range",
-      "Notes"
+      "Ad Platform",
+      "Budget Allocation (RMB)",
+      "Budget %",
+      "Estimated Clicks",
+      "Estimated Impressions",
+      "Estimated CTR",
+      "Estimated Avg. CPC (RMB)",
+      "Estimated Avg. CPR (RMB)",
+      "Estimated Registrations"
     ];
-    const FUNNEL_ORDER = ["TOF", "MOF", "BOF"];
-    const DEFAULT_STRATEGY = {
-      market_insight: {
-        SEA: "high intent, low CPC, strong Google search behavior",
-        LATAM: "Meta-heavy, price-sensitive buyers",
-        EU_US: "high CPC, high quality buyers"
+
+    const CHANNEL_GROUPS = [
+      {
+        channel: "Search Advertising",
+        platforms: ["Google Keyword Search", "Yandex", "Google PMax"]
       },
-      funnel: {
-        TOF: ["TikTok", "Meta Video"],
-        MOF: ["Meta Traffic", "Google PMax"],
-        BOF: ["Google Search", "Meta Lead Ads"]
+      {
+        channel: "Display Ad Network",
+        platforms: ["Google Remarketing"]
       },
-      budget_split: { TOF: 0.3, MOF: 0.25, BOF: 0.45 },
-      channel_strategy: {
-        Google: { role: "high intent conversion", priority: "BOF" },
-        Meta: { role: "lead generation", priority: "MOF/BOF" },
-        TikTok: { role: "awareness", priority: "TOF" }
+      {
+        channel: "Social Media Advertising",
+        platforms: [
+          "Facebook & IG Website Traffic",
+          "Facebook & IG Lead Ads",
+          "TikTok",
+          "LinkedIn Lead Ads"
+        ]
+      }
+    ];
+
+    const DEFAULT_BENCHMARKS = {
+      "Google Keyword Search": { cpc: 8, ctr: 0.02, cpr: 120 },
+      "Yandex": { cpc: 6, ctr: 0.02, cpr: 120 },
+      "Google PMax": { cpc: 3, ctr: 0.03, cpr: 110 },
+      "Google Remarketing": { cpc: 2, ctr: 0.012, cpr: 120 },
+      "Facebook & IG Website Traffic": { cpc: 4, ctr: 0.006, cpr: 200 },
+      "Facebook & IG Lead Ads": { cpc: 4, ctr: 0.006, cpr: 100 },
+      "TikTok": { cpc: 3, ctr: 0.006, cpr: 150 },
+      "LinkedIn Lead Ads": { cpc: 28, ctr: 0.006, cpr: 800 }
+    };
+
+    const ALL_PLATFORMS = CHANNEL_GROUPS.flatMap((group) => group.platforms);
+
+    const DEFAULT_BRIEF = {
+      client_name: "Demo Client",
+      market: "China Export",
+      total_budget_rmb: 300000,
+      selected_platforms: [
+        "Google Keyword Search",
+        "Google PMax",
+        "Google Remarketing",
+        "Facebook & IG Website Traffic",
+        "Facebook & IG Lead Ads",
+        "TikTok"
+      ],
+      platform_budget_percentages: {
+        "Google Keyword Search": 0.25,
+        "Yandex": 0,
+        "Google PMax": 0.2,
+        "Google Remarketing": 0.1,
+        "Facebook & IG Website Traffic": 0.15,
+        "Facebook & IG Lead Ads": 0.2,
+        "TikTok": 0.1,
+        "LinkedIn Lead Ads": 0
       },
-      kpi_forecast: {
-        ctr_range: "1.5%-4%",
-        cpc_range: { google: "8-25 RMB", meta: "3-10 RMB" },
-        cvr_range: "2%-6%",
-        cpl_range: "50-120 RMB"
-      },
-      creative_strategy: {
-        angles: ["industry sourcing", "scale & credibility", "supply chain advantage"],
-        formats: ["video", "static", "testimonial"]
+      benchmarks: {
+        "Google Keyword Search": {
+          cpc: 8,
+          ctr: "2%",
+          cpr: 120
+        }
       }
     };
 
-    const strategyInput = document.getElementById("strategyJson");
+    const briefInput = document.getElementById("clientBrief");
     const errorBox = document.getElementById("error");
     const table = document.getElementById("planTable");
     const rowCount = document.getElementById("rowCount");
     let currentRows = [];
 
-    function channelFamily(channel) {
-      const normalized = String(channel).toLowerCase();
-      if (normalized.includes("google")) return "Google";
-      if (normalized.includes("meta")) return "Meta";
-      if (normalized.includes("tiktok")) return "TikTok";
-      return String(channel).split(/\s+/)[0];
+    function parseNumber(value) {
+      if (typeof value === "number") return value;
+      const cleaned = String(value).replace(/,/g, "").replace(/RMB/g, "").replace(/¥/g, "").trim();
+      if (!cleaned) throw new Error("Expected numeric value, got blank");
+      return Number(cleaned);
     }
 
-    function slug(value) {
-      return String(value).trim().replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    function parsePercentage(value) {
+      if (typeof value === "number") return value > 1 ? value / 100 : value;
+      const text = String(value).trim();
+      if (text.endsWith("%")) return Number(text.slice(0, -1).trim()) / 100;
+      const numeric = Number(text);
+      return numeric > 1 ? numeric / 100 : numeric;
     }
 
-    function budgetValue(split) {
-      if (typeof split === "number") return `${Number((split * 100).toFixed(2))}%`;
-      return String(split);
+    function parseMetric(value, metric) {
+      return metric === "ctr" ? parsePercentage(value) : parseNumber(value);
     }
 
-    function kpiTarget(kpiForecast, family) {
-      const parts = [];
-      if (kpiForecast.ctr_range) parts.push(`CTR ${kpiForecast.ctr_range}`);
-      const cpcRange = kpiForecast.cpc_range || {};
-      const cpc = cpcRange[String(family).toLowerCase()];
-      if (cpc) parts.push(`CPC ${cpc}`);
-      if (kpiForecast.cvr_range) parts.push(`CVR ${kpiForecast.cvr_range}`);
-      return parts.join("; ");
-    }
-
-    function creativeAngle(creativeStrategy) {
-      const angles = creativeStrategy.angles || [];
-      const formats = creativeStrategy.formats || [];
-      const angleText = angles.join(", ");
-      const formatText = formats.join(", ");
-      if (angleText && formatText) return `${angleText} | Formats: ${formatText}`;
-      return angleText || formatText;
-    }
-
-    function notes(marketInsight, channelRules) {
-      const parts = [];
-      if (marketInsight) parts.push(`Market insight: ${marketInsight}`);
-      if (channelRules.role) parts.push(`Channel role: ${channelRules.role}`);
-      if (channelRules.priority) parts.push(`Priority: ${channelRules.priority}`);
-      return parts.join("; ");
-    }
-
-    function validateStrategy(strategy) {
-      const required = ["market_insight", "funnel", "budget_split", "channel_strategy", "kpi_forecast", "creative_strategy"];
-      const missing = required.filter((key) => !(key in strategy));
-      if (missing.length) throw new Error(`Missing required key(s): ${missing.join(", ")}`);
-      for (const stage of FUNNEL_ORDER) {
-        if (!(stage in strategy.funnel)) throw new Error(`Missing funnel stage: ${stage}`);
-        if (!(stage in strategy.budget_split)) throw new Error(`Missing budget split stage: ${stage}`);
-      }
-      if (!("cpl_range" in strategy.kpi_forecast)) throw new Error("Missing kpi_forecast.cpl_range");
-      if (!("angles" in strategy.creative_strategy)) throw new Error("Missing creative_strategy.angles");
-    }
-
-    function generateRows(strategy) {
-      validateStrategy(strategy);
-      const rows = [];
-      for (const [market, insight] of Object.entries(strategy.market_insight)) {
-        for (const stage of FUNNEL_ORDER) {
-          for (const channel of strategy.funnel[stage]) {
-            const family = channelFamily(channel);
-            const channelRules = strategy.channel_strategy[family] || {};
-            rows.push([
-              market,
-              channel,
-              `${slug(market)}_${slug(channel)}_${slug(stage)}_Media-Plan`,
-              stage,
-              strategy.audience || "",
-              budgetValue(strategy.budget_split[stage]),
-              kpiTarget(strategy.kpi_forecast, family),
-              creativeAngle(strategy.creative_strategy),
-              strategy.kpi_forecast.cpl_range,
-              notes(insight, channelRules)
-            ]);
-          }
+    function mergeBenchmarks(customBenchmarks = {}) {
+      const benchmarks = JSON.parse(JSON.stringify(DEFAULT_BENCHMARKS));
+      for (const [platform, values] of Object.entries(customBenchmarks)) {
+        if (!benchmarks[platform]) throw new Error(`Unknown benchmark platform: ${platform}`);
+        for (const metric of ["cpc", "ctr", "cpr"]) {
+          if (metric in values) benchmarks[platform][metric] = parseMetric(values[metric], metric);
         }
       }
+      return benchmarks;
+    }
+
+    function validateBrief(brief) {
+      if (!("total_budget_rmb" in brief)) throw new Error("Missing required field: total_budget_rmb");
+      if (parseNumber(brief.total_budget_rmb) <= 0) throw new Error("total_budget_rmb must be greater than 0");
+
+      const selectedPlatforms = brief.selected_platforms || ALL_PLATFORMS;
+      const unknownSelected = selectedPlatforms.filter((platform) => !ALL_PLATFORMS.includes(platform));
+      if (unknownSelected.length) throw new Error(`Unknown selected platform(s): ${unknownSelected.join(", ")}`);
+
+      for (const field of ["platform_budgets_rmb", "platform_budget_percentages"]) {
+        const values = brief[field] || {};
+        const unknown = Object.keys(values).filter((platform) => !ALL_PLATFORMS.includes(platform));
+        if (unknown.length) throw new Error(`Unknown ${field} key(s): ${unknown.join(", ")}`);
+      }
+    }
+
+    function allocateBudgets(brief, totalBudget, selectedPlatforms) {
+      const budgets = Object.fromEntries(ALL_PLATFORMS.map((platform) => [platform, 0]));
+      if (brief.platform_budgets_rmb) {
+        for (const [platform, amount] of Object.entries(brief.platform_budgets_rmb)) {
+          budgets[platform] = parseNumber(amount);
+        }
+        return budgets;
+      }
+      if (brief.platform_budget_percentages) {
+        for (const [platform, percentage] of Object.entries(brief.platform_budget_percentages)) {
+          budgets[platform] = totalBudget * parsePercentage(percentage);
+        }
+        return budgets;
+      }
+      const evenBudget = totalBudget / selectedPlatforms.length;
+      for (const platform of selectedPlatforms) budgets[platform] = evenBudget;
+      return budgets;
+    }
+
+    function generateRows(brief) {
+      validateBrief(brief);
+      const totalBudget = parseNumber(brief.total_budget_rmb);
+      const selectedPlatforms = new Set(brief.selected_platforms || ALL_PLATFORMS);
+      const benchmarks = mergeBenchmarks(brief.benchmarks || {});
+      const budgets = allocateBudgets(brief, totalBudget, selectedPlatforms);
+      const rows = [];
+
+      for (const group of CHANNEL_GROUPS) {
+        for (const platform of group.platforms) {
+          const budget = budgets[platform] || 0;
+          const benchmark = benchmarks[platform];
+          const clicks = budget / benchmark.cpc;
+          const impressions = clicks / benchmark.ctr;
+          const registrations = budget / benchmark.cpr;
+          rows.push({
+            selected: selectedPlatforms.has(platform),
+            cells: [
+              group.channel,
+              platform,
+              budget,
+              budget / totalBudget,
+              clicks,
+              impressions,
+              benchmark.ctr,
+              benchmark.cpc,
+              benchmark.cpr,
+              registrations
+            ]
+          });
+        }
+      }
+
+      const totals = calculateTotals(rows);
+      rows.push({ total: true, selected: false, cells: totals });
       return rows;
+    }
+
+    function calculateTotals(rows) {
+      const totalBudget = rows.reduce((sum, row) => sum + row.cells[2], 0);
+      const totalClicks = rows.reduce((sum, row) => sum + row.cells[4], 0);
+      const totalImpressions = rows.reduce((sum, row) => sum + row.cells[5], 0);
+      const totalRegistrations = rows.reduce((sum, row) => sum + row.cells[9], 0);
+      return [
+        "Total",
+        "",
+        totalBudget,
+        1,
+        totalClicks,
+        totalImpressions,
+        totalClicks / totalImpressions,
+        totalBudget / totalClicks,
+        totalBudget / totalRegistrations,
+        totalRegistrations
+      ];
     }
 
     function renderTable(rows) {
       const headerHtml = `<thead><tr>${HEADERS.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr></thead>`;
-      const bodyHtml = `<tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("")}</tbody>`;
+      const bodyHtml = `<tbody>${rows.map(renderRow).join("")}</tbody>`;
       table.innerHTML = headerHtml + bodyHtml;
-      rowCount.textContent = `已生成 ${rows.length} 行`;
+      rowCount.textContent = `Generated ${rows.length - 1} platform rows + Total`;
+    }
+
+    function renderRow(row) {
+      const className = row.total ? " class=\"total\"" : "";
+      return `<tr${className}>${row.cells.map((cell, index) => {
+        const selectedClass = row.selected && index === 1 ? " class=\"selected\"" : "";
+        return `<td${selectedClass}>${escapeHtml(formatCell(cell, index))}</td>`;
+      }).join("")}</tr>`;
+    }
+
+    function formatCell(value, index) {
+      if (index === 2) return formatCurrency(value);
+      if (index === 3 || index === 6) return formatPercent(value);
+      if (index === 4 || index === 5 || index === 9) return formatInteger(value);
+      if (index === 7 || index === 8) return formatCurrency(value, 2);
+      return value;
+    }
+
+    function formatCurrency(value, decimals = 0) {
+      return `RMB ${Number(value).toLocaleString("en-US", {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals
+      })}`;
+    }
+
+    function formatPercent(value) {
+      return `${(Number(value) * 100).toFixed(2)}%`;
+    }
+
+    function formatInteger(value) {
+      return Number(value).toLocaleString("en-US", { maximumFractionDigits: 0 });
     }
 
     function escapeHtml(value) {
-      return String(value).replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[char]));
+      return String(value).replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[char]));
     }
 
     function showError(message) {
@@ -217,18 +324,22 @@
     function generate() {
       clearError();
       try {
-        const strategy = JSON.parse(strategyInput.value);
-        currentRows = generateRows(strategy);
+        const brief = JSON.parse(briefInput.value);
+        currentRows = generateRows(brief);
         renderTable(currentRows);
       } catch (error) {
-        showError(`无法生成：${error.message}`);
+        showError(`Cannot generate media plan: ${error.message}`);
       }
     }
 
     function downloadCsv() {
       if (!currentRows.length) generate();
       if (!currentRows.length) return;
-      const lines = [HEADERS, ...currentRows].map((row) => row.map(csvCell).join(","));
+      const csvRows = [
+        HEADERS,
+        ...currentRows.map((row) => row.cells.map((cell, index) => formatCell(cell, index)))
+      ];
+      const lines = csvRows.map((row) => row.map(csvCell).join(","));
       const blob = new Blob(["\ufeff" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -244,7 +355,7 @@
     }
 
     function loadSample() {
-      strategyInput.value = JSON.stringify(DEFAULT_STRATEGY, null, 2);
+      briefInput.value = JSON.stringify(DEFAULT_BRIEF, null, 2);
       generate();
     }
 
